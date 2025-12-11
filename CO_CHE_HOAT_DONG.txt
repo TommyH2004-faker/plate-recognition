@@ -1,0 +1,288 @@
+================================================================================
+        CƠ CHẾ HOẠT ĐỘNG HỆ THỐNG NHẬN DIỆN BIỂN SỐ XE
+================================================================================
+
+I. TỔNG QUAN HỆ THỐNG
+================================================================================
+
+Hệ thống nhận diện biển số xe sử dụng kết hợp 2 công nghệ chính:
+1. Computer Vision (OpenCV) - Để định vị vị trí biển số trong ảnh
+2. Deep Learning OCR (EasyOCR) - Để đọc ký tự trên biển số
+
+Nguyên lý hoạt động: Phân tích hình ảnh qua các tầng xử lý từ thô đến tinh,
+lọc dần thông tin để tìm ra vùng biển số, sau đó dùng AI để đọc ký tự.
+
+
+II. QUY TRÌNH XỬ LÝ 8 BƯỚC
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 1: TIỀN XỬ LÝ ẢNH ĐẦU VÀO                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Chuẩn hóa dữ liệu đầu vào
+Hoạt động:
+  - Load ảnh từ thư mục images/
+  - Resize về kích thước cố định 800x600 pixels
+  - Mục đích resize: Đảm bảo tốc độ xử lý đồng nhất, không phụ thuộc 
+    vào kích thước ảnh gốc
+
+Đầu vào: Ảnh màu từ camera/file (kích thước bất kỳ)
+Đầu ra: Ảnh màu BGR 800x600 pixels
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 2: CHUYỂN ĐỔI KHÔNG GIAN MÀU (GRAYSCALE)                         │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Giảm độ phức tạp của dữ liệu
+Hoạt động:
+  - Chuyển từ ảnh màu BGR (3 kênh) sang ảnh xám (1 kênh)
+  - Loại bỏ thông tin màu sắc, chỉ giữ lại cường độ sáng
+  - Giảm 66% dữ liệu cần xử lý (3 kênh → 1 kênh)
+
+Lý do: 
+  - Biển số xe được nhận dạng chủ yếu qua hình dạng và cường độ sáng,
+    không cần thông tin màu sắc
+  - Tăng tốc độ xử lý các bước tiếp theo
+
+Đầu vào: Ảnh màu 800x600x3
+Đầu ra: Ảnh xám 800x600x1
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 3: LÀM MỜ GAUSSIAN (NOISE REDUCTION)                              │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Giảm nhiễu và làm mịn ảnh
+Hoạt động:
+  - Áp dụng bộ lọc Gaussian với kernel 5x5
+  - Mỗi pixel được tính trung bình có trọng số với các pixel xung quanh
+  - Trọng số theo phân phối Gaussian (gần thì ảnh hưởng mạnh, xa thì yếu)
+
+Lý do:
+  - Loại bỏ nhiễu điểm, nhiễu hạt trong ảnh
+  - Làm mịn các chi tiết nhỏ không cần thiết
+  - Chuẩn bị cho bước phát hiện biên chính xác hơn
+  - Tránh phát hiện quá nhiều biên giả do nhiễu
+
+Đầu vào: Ảnh xám có nhiễu
+Đầu ra: Ảnh xám đã được làm mịn
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 4: PHÁT HIỆN BIÊN CANNY (EDGE DETECTION)                          │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Tìm các đường viền, cạnh của vật thể trong ảnh
+Hoạt động:
+  - Tính gradient cường độ sáng theo 2 chiều x, y
+  - Tìm vị trí có gradient lớn (thay đổi cường độ mạnh)
+  - Áp dụng ngưỡng kép (threshold_low=10, threshold_high=200)
+  - Chỉ giữ lại các cạnh mạnh và cạnh yếu nối với cạnh mạnh
+
+Nguyên lý Canny:
+  1. Nơi nào cường độ sáng thay đổi đột ngột → đó là biên/cạnh
+  2. Biển số xe có viền rõ ràng, tương phản cao với nền
+  3. Kết quả: Ảnh chỉ còn các đường viền trắng trên nền đen
+
+Đầu vào: Ảnh xám đã làm mịn
+Đầu ra: Ảnh nhị phân (chỉ có đen/trắng) thể hiện các cạnh
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 5: TÌM CONTOURS (ĐƯỜNG VIỀN KHÉP KÍN)                             │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Nhóm các pixel biên thành các đường viền khép kín
+Hoạt động:
+  - Duyệt ảnh biên, tìm các pixel liên thông tạo thành đường kín
+  - Mỗi contour là một chuỗi các điểm tạo thành đường viền vật thể
+  - Sắp xếp contours theo diện tích từ lớn đến nhỏ
+  - Chỉ lấy 5 contours có diện tích lớn nhất
+
+Lý do chỉ lấy 5 contours lớn nhất:
+  - Biển số xe thường là vật thể lớn, nổi bật trong ảnh
+  - Loại bỏ các contour nhỏ (nhiễu, chi tiết không cần thiết)
+  - Tăng tốc độ xử lý ở bước tiếp theo
+
+Đầu vào: Ảnh biên (edge image)
+Đầu ra: Danh sách 5 contours lớn nhất
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 6: PHÁT HIỆN HÌNH CHỮ NHẬT BIỂN SỐ (PLATE DETECTION)             │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Tìm contour có hình dạng chữ nhật → đó là biển số
+Hoạt động:
+  - Duyệt qua 5 contours lớn nhất
+  - Với mỗi contour:
+    + Tính chu vi (perimeter)
+    + Xấp xỉ thành đa giác với độ chính xác 2% chu vi
+    + Kiểm tra xem đa giác có đúng 4 đỉnh không
+  - Contour đầu tiên có 4 đỉnh → đó là biển số
+
+Nguyên lý hình học:
+  - Biển số xe có dạng hình chữ nhật (4 góc, 4 cạnh)
+  - Thuật toán Douglas-Peucker (approxPolyDP) đơn giản hóa contour
+  - Nếu sau khi đơn giản hóa có đúng 4 đỉnh → là hình chữ nhật
+
+Giả định:
+  - Biển số là vật thể lớn nhất có hình chữ nhật trong ảnh
+  - Ưu tiên contour có diện tích lớn
+
+Đầu vào: 5 contours lớn nhất
+Đầu ra: Contour hình chữ nhật của biển số (4 đỉnh)
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 7: TRÍCH XUẤT VÙNG BIỂN SỐ (ROI EXTRACTION)                       │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Cắt chính xác vùng biển số ra khỏi ảnh gốc
+Hoạt động:
+  - Tính bounding box (hình chữ nhật bao quanh) của contour biển số
+  - Bounding box được xác định bởi: (x, y, width, height)
+  - Cắt vùng ROI từ ảnh xám gốc theo tọa độ bounding box
+  - ROI = Region of Interest = vùng quan tâm = vùng biển số
+
+Lý do cắt từ ảnh xám gốc (không phải ảnh biên):
+  - Ảnh biên chỉ có viền, không có nội dung bên trong
+  - Cần ảnh xám gốc để OCR đọc được ký tự
+  - Ảnh xám giữ nguyên thông tin cường độ sáng của ký tự
+
+Đầu vào: Contour biển số + ảnh xám gốc
+Đầu ra: Ảnh xám chỉ chứa vùng biển số
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BƯỚC 8: NHẬN DẠNG KÝ TỰ BẰNG OCR (CHARACTER RECOGNITION)               │
+└─────────────────────────────────────────────────────────────────────────┘
+Mục đích: Đọc ký tự trên biển số bằng trí tuệ nhân tạo
+Hoạt động:
+  - Khởi tạo EasyOCR Reader với ngôn ngữ tiếng Anh
+  - Truyền ảnh ROI biển số vào OCR engine
+  - OCR phân tích từng vùng chứa ký tự, dự đoán ký tự đó là gì
+  - Trả về danh sách kết quả: [(vị trí, text, độ tin cậy), ...]
+  - Lấy kết quả có độ tin cậy cao nhất (phần tử đầu tiên)
+
+Công nghệ EasyOCR:
+  - Sử dụng Deep Learning (mạng neural CRAFT + CRNN)
+  - CRAFT: Phát hiện vùng chứa text
+  - CRNN: Nhận dạng chuỗi ký tự
+  - Đã được huấn luyện trên hàng triệu mẫu text
+
+Đầu vào: Ảnh vùng biển số
+Đầu ra: Chuỗi ký tự biển số (ví dụ: "51K12345")
+
+
+III. CƠ CHẾ HIỂN THỊ KẾT QUẢ
+================================================================================
+
+Sau khi có kết quả nhận dạng, hệ thống:
+1. Vẽ khung hình chữ nhật màu xanh dương bao quanh biển số trên ảnh gốc
+2. Hiển thị text kết quả ở vị trí (200, 500) với font Arial 32px màu xanh lá
+3. Nếu không tìm thấy biển số: hiển thị "Không thấy bảng số xe"
+4. Nếu tìm thấy: hiển thị "Biển số: [ký tự nhận dạng được]"
+
+
+IV. CÁC PHIÊN BẢN TRIỂN KHAI
+================================================================================
+
+Hệ thống có 3 phiên bản:
+
+1. python.py
+   - Script Python thuần, chạy với OpenCV windows
+   - Hiển thị từng bước bằng cv2.imshow()
+   - Phù hợp chạy trên máy có GUI
+
+2. xuLyAnh_Detail.ipynb
+   - Notebook chi tiết từng bước
+   - Mỗi bước là một cell riêng biệt
+   - Hiển thị bằng matplotlib trong notebook
+   - Phù hợp để học tập, debug, phân tích từng bước
+
+3. XuLyAuto.ipynb
+   - Notebook tự động hóa
+   - Đóng gói toàn bộ quy trình vào 1 hàm plate_recognition()
+   - Chỉ cần gọi hàm với đường dẫn ảnh
+   - Phù hợp để sử dụng nhanh, test nhiều ảnh
+
+4. xuLyMoAnh_OCR.ipynb
+   - Thử nghiệm với ảnh bị làm mờ
+   - Bổ sung bước làm nét (sharpen) trước khi xử lý
+   - Kiểm tra độ robust của thuật toán
+
+
+V. ƯU ĐIỂM VÀ HẠN CHẾ
+================================================================================
+
+ƯU ĐIỂM:
+✓ Không cần huấn luyện model mới, dùng EasyOCR có sẵn
+✓ Quy trình rõ ràng, dễ hiểu, dễ debug
+✓ Xử lý nhanh, phù hợp real-time
+✓ Không phụ thuộc vào màu sắc biển số
+✓ Có thể áp dụng cho nhiều loại biển số khác nhau
+
+HẠN CHẾ:
+✗ Giả định biển số là contour lớn nhất có 4 cạnh → có thể nhầm với bảng hiệu
+✗ Phụ thuộc nhiều vào góc chụp (ảnh nghiêng nhiều sẽ khó nhận dạng)
+✗ Cần ánh sáng tốt (ảnh tối sẽ phát hiện biên kém)
+✗ Biển số bị che khuất một phần sẽ không phát hiện được
+✗ OCR có thể nhầm ký tự tương tự (0-O, 1-I, 8-B)
+
+
+VI. NGUYÊN LÝ TOÁN HỌC CƠ BẢN
+================================================================================
+
+1. Gaussian Blur:
+   G(x,y) = (1/2πσ²) * e^(-(x²+y²)/2σ²)
+   - Mỗi pixel mới = tổng có trọng số của pixel xung quanh
+   - Trọng số theo phân phối Gaussian
+
+2. Canny Edge:
+   - Gradient = √(Gx² + Gy²)
+   - Gx, Gy: đạo hàm cường độ sáng theo x, y
+   - Biên = nơi gradient lớn nhất theo hướng vuông góc với biên
+
+3. Contour Finding:
+   - Thuật toán Suzuki-Abe
+   - Duyệt biên theo cấu trúc cây phân cấp
+   - Phát hiện các đường viền khép kín
+
+4. Douglas-Peucker (approxPolyDP):
+   - Xấp xỉ đường cong bằng đa giác ít đỉnh hơn
+   - Giữ lại các đỉnh quan trọng, loại bỏ đỉnh dư thừa
+   - Sai số tối đa = epsilon * chu vi
+
+
+VII. LUỒNG DỮ LIỆU TỔNG QUAN
+================================================================================
+
+Ảnh gốc (800x600x3 BGR)
+    ↓
+Ảnh xám (800x600x1)
+    ↓
+Ảnh làm mịn (800x600x1)
+    ↓
+Ảnh biên (800x600x1 binary)
+    ↓
+Contours (danh sách tọa độ điểm)
+    ↓
+Contour hình chữ nhật (4 đỉnh)
+    ↓
+ROI biển số (WxHx1)
+    ↓
+OCR → Text biển số
+    ↓
+Hiển thị kết quả trên ảnh gốc
+
+
+VIII. KẾT LUẬN
+================================================================================
+
+Hệ thống hoạt động theo nguyên tắc "chia để trị":
+- Chia bài toán phức tạp thành các bước đơn giản
+- Mỗi bước giải quyết một vấn đề cụ thể
+- Kết hợp Computer Vision truyền thống + AI hiện đại
+- Tận dụng điểm mạnh của từng công nghệ
+
+Cốt lõi: Tìm vật thể có hình chữ nhật → Cắt vùng đó → Dùng AI đọc ký tự
+
+================================================================================
+                            HẾT TÀI LIỆU
+================================================================================
